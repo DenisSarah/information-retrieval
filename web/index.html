@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Поиск · MS MARCO</title>
+<style>
+  :root { font-family: system-ui, -apple-system, sans-serif; color: #202124; background: #fff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 940px; margin: 0 auto; padding: 48px 24px 64px; }
+  header { margin-bottom: 30px; }
+  h1 { margin: 0 0 6px; font-size: 28px; font-weight: 650; letter-spacing: -.7px; }
+  .subtitle { margin: 0 0 24px; color: #687078; font-size: 14px; }
+  form { display: flex; flex-wrap: wrap; gap: 10px; }
+  input { min-width: 0; flex: 1; border: 1px solid #d5dae0; border-radius: 10px; padding: 14px 16px; font: inherit; background: #fff; }
+  input:focus { outline: 2px solid #bed7ff; border-color: #4285f4; }
+  button { border: 0; border-radius: 10px; padding: 0 23px; font: inherit; font-weight: 600; color: white; background: #1a66d5; cursor: pointer; }
+  button:hover { background: #1759ba; }
+  button:disabled { opacity: .65; cursor: wait; }
+  .limit-setting { flex-basis: 100%; display: flex; align-items: center; gap: 10px; color: #687078; font-size: 13px; }
+  .limit-setting input { flex: none; width: 90px; padding: 7px 10px; }
+  #status { min-height: 22px; margin: 0 0 26px; color: #687078; font-size: 14px; line-height: 1.6; }
+  #status.error { color: #b3261e; }
+  article { margin-bottom: 30px; max-width: 760px; }
+  .source { color: #687078; font-size: 12px; overflow-wrap: anywhere; margin: 0 0 4px; }
+  h2 { margin: 0 0 7px; font-size: 20px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+  a { color: #1558bd; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, button:focus-visible { outline: 2px solid #4285f4; outline-offset: 4px; }
+  .snippet { margin: 0 0 8px; color: #3c4043; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+  .saved { font-size: 12px; color: #687078; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  @media (max-width: 540px) {
+    main { padding: 28px 18px 40px; }
+    h1 { font-size: 25px; }
+    form { gap: 7px; }
+    input { padding: 13px 12px; }
+    button { padding: 0 15px; }
+    h2 { font-size: 18px; }
+  }
+</style>
+<main>
+  <header>
+    <h1>Поиск по MS MARCO</h1>
+    <p class="subtitle">Веб-документы · булев поиск</p>
+    <form id="search-form" role="search">
+      <label for="query" class="sr-only">Поисковый запрос</label>
+      <input id="query" name="q" type="search" placeholder="Например, dijkstra AND algorithm" required autofocus spellcheck="false">
+      <button type="submit">Найти</button>
+      <label class="limit-setting" for="limit">Показывать <input id="limit" name="limit" type="number" value="10" min="1" max="1000" step="1" required></label>
+    </form>
+  </header>
+  <p id="status" role="status" aria-live="polite">Введите запрос, чтобы найти документы.</p>
+  <section id="results" aria-label="Результаты поиска"></section>
+</main>
+<template id="result-template">
+  <article>
+    <p class="source"></p>
+    <h2><a class="title" target="_blank" rel="noopener noreferrer"></a></h2>
+    <p class="snippet"></p>
+    <a class="saved" target="_blank" rel="noopener noreferrer">Сохранённый текст</a>
+  </article>
+</template>
+<script>
+  const form = document.querySelector('#search-form');
+  const query = document.querySelector('#query');
+  const limit = document.querySelector('#limit');
+  const button = form.querySelector('button');
+  const status = document.querySelector('#status');
+  const results = document.querySelector('#results');
+  const template = document.querySelector('#result-template');
+  const number = new Intl.NumberFormat('ru-RU');
+  let activeRequest;
+
+  async function search() {
+    const text = query.value.trim();
+    if (!text) { query.focus(); return; }
+    if (!limit.reportValidity()) return;
+    limit.value = String(limit.valueAsNumber);
+    if (activeRequest) activeRequest.abort();
+    const request = new AbortController();
+    activeRequest = request;
+    button.disabled = true;
+    results.setAttribute('aria-busy', 'true');
+    results.replaceChildren();
+    status.className = '';
+    status.textContent = 'Ищем документы…';
+    const parameters = new URLSearchParams({ q: text, limit: limit.value });
+    history.replaceState(null, '', '?' + parameters);
+    try {
+      const response = await fetch('/api/search?' + parameters, { signal: request.signal });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || 'Не удалось выполнить поиск.');
+      const fragment = document.createDocumentFragment();
+      for (const item of data.results) {
+        const entry = template.content.cloneNode(true);
+        const id = encodeURIComponent(String(item.id));
+        const title = entry.querySelector('.title');
+        title.textContent = item.title || 'Документ ' + item.id;
+        title.href = '/open/' + id;
+        entry.querySelector('.source').textContent = item.external_id || 'Документ ' + item.id;
+        entry.querySelector('.snippet').textContent = item.snippet || 'Текст для предварительного просмотра отсутствует.';
+        entry.querySelector('.saved').href = '/document/' + id;
+        fragment.append(entry);
+      }
+      results.replaceChildren(fragment);
+      const count = data.results.length;
+      const timing = Number.isFinite(data.elapsed_ms) ? ' · ' + number.format(Math.round(data.elapsed_ms)) + ' мс' : '';
+      status.textContent = 'Всего найдено: ' + number.format(data.total) + ' · Показано: ' + number.format(count) + timing;
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        status.className = 'error';
+        status.textContent = error instanceof TypeError ? 'Не удалось связаться с сервером. Попробуйте ещё раз.' : error.message;
+      }
+    } finally {
+      if (activeRequest === request) {
+        button.disabled = false;
+        results.removeAttribute('aria-busy');
+        activeRequest = null;
+      }
+    }
+  }
+
+  form.addEventListener('submit', event => { event.preventDefault(); search(); });
+  limit.addEventListener('change', () => { if (query.value.trim()) search(); });
+  const parameters = new URLSearchParams(location.search);
+  const initialLimit = Number(parameters.get('limit'));
+  if (Number.isInteger(initialLimit) && initialLimit >= 1 && initialLimit <= 1000) limit.value = initialLimit;
+  const initialQuery = parameters.get('q');
+  if (initialQuery) { query.value = initialQuery; search(); }
+</script>
+</html>
